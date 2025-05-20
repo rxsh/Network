@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <exception>
 #include <netinet/in.h>
 #include <sstream>
 #include <stdlib.h>
@@ -82,10 +83,9 @@ void readThreadSocket(int clientFD){
 	int n;
 	bool fileTransferActive = false;
 	string readText;
-
+	bool expectingSpectators = false;
 
 	while(true){
-
 		memset(buffer,0,sizeof(buffer));
 		n = read(clientFD,buffer,sizeof(buffer)-1);
 		if(n<0) break;
@@ -110,6 +110,16 @@ void readThreadSocket(int clientFD){
 					fileTransferActive = false;
 					readText = "";
 				}
+			} else if(expectingSpectators){
+				// no hacemos nada con la respuesta, ya que el servidor maneja esto
+				expectingSpectators = false;
+
+			} else if(expectingSpectators){
+
+				expectingSpectators = true;
+				cout << inp;
+				cout.flush();
+
 			} else{
 				// normal message
 				cout << inp;
@@ -150,6 +160,7 @@ int main(){
 	cout << "- M<name> <message> to send private message" << endl;
 	cout << "- B to send public message" << endl;
 	cout << "- F <destinary> <filename> to receive file" << endl;
+	cout << "- J to join TicTacToe game" << endl;
 	cout << "- Q to quit" << endl;
 
 	thread(readThreadSocket,sock).detach();

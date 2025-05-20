@@ -21,7 +21,6 @@ using namespace std;
 mutex clients_mutex;
 map<string, int> clients;
 
-
 struct TicTacToe{
 
     vector<vector<char>> board;
@@ -35,6 +34,7 @@ struct TicTacToe{
 };
 
 TicTacToe game;
+mutex game_mutex;
 
 void sendClient(int clientFD, const string& message){
     write(clientFD, message.c_str(), message.size());
@@ -68,7 +68,6 @@ void broadcastSpects(const string& msg){
 }
 
 void updatePlayers(){
-
     string board = "\nCurrent Board: \n";
     for(int i=0; i<3; i++){
         for(int j=0; j<3; j++){
@@ -83,13 +82,13 @@ void updatePlayers(){
     if(game.gameStart){
         if(!game.playerX.empty() && clients.find(game.playerX) != clients.end()){
             string msgX = board;
-            if(game.turn == 'X') msgX += "Is your turn (X). Enter your movement (row column. ej 1 2)";
+            if(game.turn == 'X') msgX += "Is your turn (X). Enter your movement (1-9)";
             else msgX += "waiting player O...\n";
             sendClient(game.sockX,msgX);
         }
         if(!game.playerO.empty() && clients.find(game.playerO) != clients.end()){
             string msgO = board;
-            if(game.turn == 'O') msgO += "Is your turn (O). Enter your movement (row column. ej 1 2)";
+            if(game.turn == 'O') msgO += "Is your turn (O). Enter your movement (1-9)";
             else msgO += "waiting player X...\n";
             sendClient(game.sockO,msgO);
         }
@@ -121,7 +120,6 @@ bool checkWinner(char player){
     }
 
     return false;
-
 }
 
 bool checkDraw(){
@@ -139,28 +137,32 @@ void handleGame(const string& nickname, int clientFD, const string& nextMove){
 
     char player = (nickname != game.playerO) ? 'X' : 'O';
     if(player != game.turn){
-        sendClient(clientFD,"no es tu turno.\n");
+        sendClient(clientFD,"It's not your turn.\n");
         return;
     }
 
     // parse the movement
     istringstream ss(nextMove);
-    int row, col;
-    if(!(ss >> row >> col) || row < 1 || row > 3 || col < 1 || col > 3){
-        sendClient(clientFD,"Invalid move. Please try again (row column).\n");
+    int position;
+    if(!(ss >> position) || position < 1 || position > 9){
+        sendClient(clientFD,"[!] Invalid move. Please try again (1-9).\n");
         return;
     }
+
+    // convert position (1-9) to row and column (0-2)
+    int row = (position-1) / 3;
+    int col = (position-1) % 3;
 
     // verify if casilla is empty
-    if(game.board[row-1][col-1] != ' '){
-        sendClient(clientFD, "casilla ocupada. Elige otra\n");
+    if(game.board[row][col] != ' '){
+        sendClient(clientFD, "[!] occupied box. choose another.\n");
         return;
     }
 
-    game.board[row-1][col-1] = player;
+    game.board[row][col] = player;
 
     if(checkWinner(player)){
-        string msgWin = "¡Player " + nickname + " (" + player + ") " + "win.\n";
+        string msgWin = "¡Player " + nickname + " (" + player + ") " + "win!.\n";
         sendClient(clientFD, msgWin);
         if(player == 'X' && clients.find(game.playerO) != clients.end()){
             sendClient(game.sockO, msgWin);
@@ -204,7 +206,7 @@ void handleGameJoin(const string& nickname, int clientFD){
 
     if(game.gameStart){
         // game in progress
-        sendClient(clientFD,"Ya hay dos jugadores. Deseas ver el juego (S/N): ");
+        sendClient(clientFD,"There are already two players. Do you want to watch the game? (S/N): ");
 
         // read response
         char rd[10];
@@ -264,7 +266,6 @@ void readThreadSocket(int clientFD){
         
         buffer[n] = '\0';
         string msg(buffer, n);
-        cout << "Size of del msg: " << msg.size() << endl;
         
         if(msg[0] == 'N'){ // registrar usuario
             
@@ -324,11 +325,34 @@ void readThreadSocket(int clientFD){
             
             }
         
-        } else if(msg[0] == 'Q'){ // salir
-        
-            if(!nickname.empty()){
+        } else if (msg[0] == 'Q') { // salir
+            if (!nickname.empty()) {
                 lock_guard<mutex> lock(clients_mutex);
                 clients.erase(nickname);
+                
+                // Si es jugador, terminar el juego
+                lock_guard<mutex> game_lock(game_mutex);
+                if (nickname == game.playerX || nickname == game.playerO) {
+                    string endMsg = "El juego ha terminado porque " + nickname + " ha abandonado.\n";
+                    if (nickname == game.playerX && clients.find(game.playerO) != clients.end()) {
+                        sendClient(game.sockO, endMsg);
+                    } else if (nickname == game.playerO && clients.find(game.playerX) != clients.end()) {
+                        sendClient(game.sockX, endMsg);
+                    }
+                    broadcastSpects(endMsg);
+                    game = TicTacToe();
+                } else {
+                    // Si es espectador, quitarlo de la lista
+                    queue<string> newSpectators;
+                    while (!game.spectators.empty()) {
+                        string spec = game.spectators.front();
+                        game.spectators.pop();
+                        if (spec != nickname) {
+                            newSpectators.push(spec);
+                        }
+                    }
+                    game.spectators = newSpectators;
+                }
             }
             cout << nickname << " disconnected.\n";
             sendClient(clientFD, "Bye from the server.\n");
@@ -336,7 +360,7 @@ void readThreadSocket(int clientFD){
             string disconnectMsg = nickname + " left from the server.\n";
             {
                 lock_guard<mutex> lock(clients_mutex);
-                for(auto it : clients){
+                for (auto it : clients) {
                     sendClient(it.second, disconnectMsg);
                 }
             }
@@ -401,7 +425,7 @@ void readThreadSocket(int clientFD){
             } else {
                 sendClient(clientFD, "File sent to " + destiny + "\n");
             }
-        }else if(msg[0] == 'B'){ // broadcast
+        }else if(msg[0] == 'B'){ 
 
             if(nicknameEmpty(nickname, clientFD)){
                 continue;
@@ -412,7 +436,6 @@ void readThreadSocket(int clientFD){
                     continue;
                 }
                 string messageContent = msg.substr(position + 1);
-                // Envía a todos, excepto al emisor
                 lock_guard<mutex> lock(clients_mutex);
                 for(auto it : clients){
                     if(it.second != clientFD){
@@ -420,6 +443,18 @@ void readThreadSocket(int clientFD){
                         sendClient(it.second, res);
                     }
                 }
+            }
+        } else if(msg[0] == 'J'){
+            if(nickname.empty()){
+                sendClient(clientFD, "[!] You must have a nickname to join the game. Use the N<nickname> command first.\n");
+                continue;
+            }
+            handleGameJoin(nickname, clientFD);   
+        }
+        else{
+            // Verify if is a movement of game
+            if(!nickname.empty() && (nickname == game.playerX || nickname == game.playerO)){
+                handleGame(nickname, clientFD, msg);
             }
         }
     }
